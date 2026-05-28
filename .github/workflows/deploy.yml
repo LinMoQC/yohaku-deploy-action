@@ -130,28 +130,15 @@ jobs:
       - name: Move assets to root
         run: mv assets/release.zip release.zip
 
-      - name: SCP release.zip to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
-          source: 'release.zip'
-          target: '/tmp/yohaku'
-          timeout: 300s
-          command_timeout: 10m
-
-      - name: SCP ecosystem.config.js to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
-          source: 'ecosystem.config.js'
-          target: '/tmp/yohaku'
-          timeout: 60s
+      - name: Transfer files via SSH pipe
+        run: |
+          sudo apt-get install -y sshpass
+          sshpass -p '${{ secrets.PASSWORD }}' ssh -o StrictHostKeyChecking=no \
+            ${{ secrets.USER }}@${{ secrets.HOST }} -p ${{ secrets.PORT }} \
+            "mkdir -p /tmp/yohaku && cat > /tmp/yohaku/release.zip" < release.zip
+          sshpass -p '${{ secrets.PASSWORD }}' ssh -o StrictHostKeyChecking=no \
+            ${{ secrets.USER }}@${{ secrets.HOST }} -p ${{ secrets.PORT }} \
+            "cat > /tmp/yohaku/ecosystem.config.js" < ecosystem.config.js
 
       - name: Deploy on server
         uses: appleboy/ssh-action@master
