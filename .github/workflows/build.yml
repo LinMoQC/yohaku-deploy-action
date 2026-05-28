@@ -97,6 +97,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
+          # Get ecosystem.config.js from deploy repo
+          curl -sL https://raw.githubusercontent.com/${{ github.repository }}/main/ecosystem.config.js -o ecosystem.config.js
           gh release delete deploy-latest -y --repo ${{ github.repository }} 2>/dev/null || true
           gh release create deploy-latest release.zip ecosystem.config.js \
             --repo ${{ github.repository }} --title "Latest Deploy" --notes "Build from ${{ needs.check.outputs.sha_short }}" --latest
