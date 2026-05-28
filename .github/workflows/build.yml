@@ -113,6 +113,7 @@ jobs:
           git add ${{ env.HASH_FILE }}
           git diff --staged --quiet || git commit -m "Update hash file"
       - uses: ad-m/github-push-action@master
+        continue-on-error: true
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
