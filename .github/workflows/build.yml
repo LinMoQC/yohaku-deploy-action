@@ -128,4 +128,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          gh workflow run deploy.yml --repo ${{ github.repository }} -f run_number=${{ github.run_number }}
+          gh workflow run "Deploy" --repo ${{ github.repository }}
