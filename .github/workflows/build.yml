@@ -41,6 +41,7 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
           lfs: true
+          submodules: recursive
       - name: Compare
         id: compare
         env:
@@ -69,6 +70,7 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
           lfs: true
+          submodules: recursive
       - run: git lfs checkout
       - uses: pnpm/action-setup@v2
       - uses: actions/setup-node@v4
