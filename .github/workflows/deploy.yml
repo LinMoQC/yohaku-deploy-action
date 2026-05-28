@@ -130,37 +130,53 @@ jobs:
       - name: Move assets to root
         run: mv assets/release.zip release.zip
 
-      - name: Transfer via SSH pipe (optimized)
+      - name: Transfer via GitHub Release + download
         run: |
-          sudo apt-get install -y sshpass
-          # Use fast cipher + compression + large buffers
-          SSH_OPTS="-o StrictHostKeyChecking=no -c chacha20-poly1305@openssh.com -o Compression=yes -o ServerAliveInterval=30"
-          sshpass -p '${{ secrets.PASSWORD }}' ssh $SSH_OPTS \
-            ${{ secrets.USER }}@${{ secrets.HOST }} -p ${{ secrets.PORT }} \
-            "mkdir -p /tmp/yohaku && cat > /tmp/yohaku/release.zip" < release.zip
-          sshpass -p '${{ secrets.PASSWORD }}' ssh $SSH_OPTS \
-            ${{ secrets.USER }}@${{ secrets.HOST }} -p ${{ secrets.PORT }} \
-            "cat > /tmp/yohaku/ecosystem.config.js" < ecosystem.config.js
+          # Create GitHub Release with artifacts
+          gh release create deploy-${{ github.run_number }} release.zip ecosystem.config.js \
+            --repo ${{ github.repository }} \
+            --title "Deploy ${{ github.run_number }}" \
+            --notes "Auto deploy from workflow"
 
-      - name: Deploy on server
+          # Get asset download URLs
+          ZIP_URL=$(gh release view deploy-${{ github.run_number }} --repo ${{ github.repository }} --json assets -q '.assets[] | select(.name=="release.zip") | .url')
+          PM2_URL=$(gh release view deploy-${{ github.run_number }} --repo ${{ github.repository }} --json assets -q '.assets[] | select(.name=="ecosystem.config.js") | .url')
+          echo "zip_url=$ZIP_URL" >> "$GITHUB_OUTPUT"
+          echo "pm2_url=$PM2_URL" >> "$GITHUB_OUTPUT"
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Download + Deploy on server
         uses: appleboy/ssh-action@master
         with:
-          command_timeout: 5m
+          command_timeout: 10m
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USER }}
           password: ${{ secrets.PASSWORD }}
           port: ${{ secrets.PORT }}
           script: |
+            # Fix DNS for GitHub access (bypass SNI filtering)
+            if ! grep -q '140.82.121.3 api.github.com' /etc/hosts; then
+              echo '140.82.121.3 api.github.com' >> /etc/hosts
+            fi
+
             set -e
             source $HOME/.bashrc
             basedir=$HOME/yohaku
             workdir=$basedir/${{ github.run_number }}
             mkdir -p $workdir $basedir/.cache
-            mv /tmp/yohaku/release.zip $workdir/
-            install -m 644 /tmp/yohaku/ecosystem.config.js $basedir/ecosystem.config.js
+
+            GH_PAT=$(grep GH_TOKEN $HOME/yohaku/.env | cut -d= -f2)
+            echo "Downloading release.zip..."
+            curl -fsSL -H "Authorization: token $GH_PAT" -H "Accept: application/octet-stream" \
+              "${{ steps.release.outputs.zip_url }}" -o $workdir/release.zip
+            echo "Downloading ecosystem.config.js..."
+            curl -fsSL -H "Authorization: token $GH_PAT" -H "Accept: application/octet-stream" \
+              "${{ steps.release.outputs.pm2_url }}" -o $basedir/ecosystem.config.js
+
             cd $workdir
             unzip -qq -o release.zip
-            rm -r /tmp/yohaku
             rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.env
             ln -s $HOME/yohaku/.env $workdir/${{ env.STANDALONE_SUBPATH }}/.env
             export NEXT_SHARP_PATH=$(npm root -g)/sharp
