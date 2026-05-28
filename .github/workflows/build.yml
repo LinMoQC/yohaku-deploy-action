@@ -94,7 +94,7 @@ jobs:
           echo ';process.title = "Yohaku (NextJS)"' >> server.js
           cd "$GITHUB_WORKSPACE"
           rm -f release.zip
-          (cd apps/web/.next && zip --symlinks -r "$GITHUB_WORKSPACE/release.zip" ./* -x "dev/*" -x "cache/*")
+          (cd apps/web/.next && zip --symlinks -r "$GITHUB_WORKSPACE/release.zip" ./* -x "*/node_modules/*" "*/cache/*")
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}

@@ -2,23 +2,12 @@ name: Deploy
 
 on:
   workflow_dispatch:
-    inputs:
-      run_number:
-        description: 'Deploy run number'
-        required: false
-        default: ''
   workflow_call:
-    inputs:
-      run_number:
-        type: string
-        required: false
-        default: ''
 
 permissions: write-all
 
 env:
   STANDALONE_SUBPATH: standalone/apps/web
-  OLD_HOST: 14.103.194.70
 
 jobs:
   deploy:
@@ -37,50 +26,29 @@ jobs:
           echo "zip_url=$ZIP_URL" >> "$GITHUB_OUTPUT"
           echo "pm2_url=$PM2_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Download on Old Server & SCP to New Server
-        uses: appleboy/ssh-action@master
-        with:
-          command_timeout: 10m
-          host: ${{ env.OLD_HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          port: 22
-          script: |
-            set -e
+      - name: Download assets
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          curl -fsSL -H "Authorization: token $GH_TOKEN" -H "Accept: application/octet-stream" \
+            "${{ steps.release.outputs.zip_url }}" -o release.zip
+          curl -fsSL -H "Authorization: token $GH_TOKEN" -H "Accept: application/octet-stream" \
+            "${{ steps.release.outputs.pm2_url }}" -o ecosystem.config.js
+          echo "release.zip: $(ls -lh release.zip | awk '{print $5}')"
 
-            # Ensure SSH key has correct permissions
-            chmod 600 /tmp/migration_key/id_ed25519 2>/dev/null || true
+      - name: Transfer via SSH pipe
+        run: |
+          sudo apt-get install -y sshpass
+          sshpass -p '${{ secrets.PASSWORD }}' ssh -o StrictHostKeyChecking=no \
+            -c chacha20-poly1305@openssh.com -o Compression=yes \
+            ${{ secrets.USER }}@${{ secrets.HOST }} -p ${{ secrets.PORT }} \
+            "mkdir -p /tmp/yohaku && cat > /tmp/yohaku/release.zip" < release.zip
+          sshpass -p '${{ secrets.PASSWORD }}' ssh -o StrictHostKeyChecking=no \
+            -c chacha20-poly1305@openssh.com -o Compression=yes \
+            ${{ secrets.USER }}@${{ secrets.HOST }} -p ${{ secrets.PORT }} \
+            "cat > /tmp/yohaku/ecosystem.config.js" < ecosystem.config.js
 
-            # Download from GitHub Release (old server can access GitHub)
-            echo "Downloading release.zip..."
-            curl -fsSL --http1.1 --retry 3 --retry-delay 5 \
-              -H "Authorization: token ${{ secrets.GH_PAT }}" \
-              -H "Accept: application/octet-stream" \
-              "${{ steps.release.outputs.zip_url }}" -o /tmp/release.zip
-
-            echo "Downloading ecosystem.config.js..."
-            curl -fsSL --http1.1 \
-              -H "Authorization: token ${{ secrets.GH_PAT }}" \
-              -H "Accept: application/octet-stream" \
-              "${{ steps.release.outputs.pm2_url }}" -o /tmp/ecosystem.config.js
-
-            # SCP files to new server (which can't access GitHub directly)
-            echo "Transferring files to new server (${{ secrets.HOST }})..."
-            scp -i /tmp/migration_key/id_ed25519 \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              /tmp/release.zip ${{ secrets.USER }}@${{ secrets.HOST }}:/tmp/release.zip
-
-            scp -i /tmp/migration_key/id_ed25519 \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              /tmp/ecosystem.config.js ${{ secrets.USER }}@${{ secrets.HOST }}:/tmp/ecosystem.config.js
-
-            # Cleanup old server temp files
-            rm -f /tmp/release.zip /tmp/ecosystem.config.js
-            echo "Files transferred successfully"
-
-      - name: Deploy on New Server
+      - name: Deploy
         uses: appleboy/ssh-action@master
         with:
           command_timeout: 10m
@@ -95,35 +63,31 @@ jobs:
             workdir=$basedir/$(date +%s)
             mkdir -p $workdir $basedir/.cache
 
-            echo "Extracting release.zip..."
             cd $workdir
-            unzip -qq -o /tmp/release.zip
-            rm -f /tmp/release.zip
+            mv /tmp/yohaku/release.zip .
+            unzip -qq -o release.zip
+            install -m 644 /tmp/yohaku/ecosystem.config.js $basedir/ecosystem.config.js
+            rm -r /tmp/yohaku
 
-            # Deploy ecosystem.config.js
-            cp /tmp/ecosystem.config.js $basedir/ecosystem.config.js
-            rm -f /tmp/ecosystem.config.js
+            # Install dependencies (node_modules excluded from zip)
+            echo "Installing dependencies..."
+            cd $workdir/${{ env.STANDALONE_SUBPATH }}
+            npm install --production --prefer-offline 2>&1 | tail -3 || npm install --production 2>&1 | tail -3
 
-            # Symlink .env
-            rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.env
-            ln -s $HOME/yohaku/.env $workdir/${{ env.STANDALONE_SUBPATH }}/.env
-
-            # Setup sharp
+            rm -f .env
+            ln -s $basedir/.env .env
             export NEXT_SHARP_PATH=$(npm root -g)/sharp
-
-            # Symlink server.js for PM2
             ln -sf $workdir/${{ env.STANDALONE_SUBPATH }}/server.js $basedir/server.js
-
-            # Setup Next.js cache symlink
-            mkdir -p $workdir/${{ env.STANDALONE_SUBPATH }}/.next
-            rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
-            ln -sf $basedir/.cache $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
+            mkdir -p .next
+            rm -rf .next/cache
+            ln -sf $basedir/.cache .next/cache
 
             cd $basedir
             if pm2 describe Yohaku >/dev/null 2>&1; then
               pm2 reload Yohaku --update-env
             else
-              pm2 start ecosystem.config.js --update-env
+              pm2 start $basedir/ecosystem.config.js --update-env
             fi
+            rm -f $workdir/release.zip
             pm2 save
             echo "Deployed successfully"
