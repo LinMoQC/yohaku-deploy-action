@@ -130,15 +130,41 @@ jobs:
       - name: Move assets to root
         run: mv assets/release.zip release.zip
 
-      - name: Transfer files via SSH pipe
+      - name: Transfer via Cloudflare Tunnel
         run: |
-          sudo apt-get install -y sshpass
-          sshpass -p '${{ secrets.PASSWORD }}' ssh -o StrictHostKeyChecking=no \
-            ${{ secrets.USER }}@${{ secrets.HOST }} -p ${{ secrets.PORT }} \
-            "mkdir -p /tmp/yohaku && cat > /tmp/yohaku/release.zip" < release.zip
-          sshpass -p '${{ secrets.PASSWORD }}' ssh -o StrictHostKeyChecking=no \
-            ${{ secrets.USER }}@${{ secrets.HOST }} -p ${{ secrets.PORT }} \
-            "cat > /tmp/yohaku/ecosystem.config.js" < ecosystem.config.js
+          # Start simple HTTP server serving release.zip + ecosystem.config.js
+          mkdir -p /tmp/serve && mv release.zip /tmp/serve/ && cp ecosystem.config.js /tmp/serve/
+          cd /tmp/serve && python3 -m http.server 8765 &
+          sleep 1
+
+          # Start cloudflared tunnel
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          ./cloudflared tunnel --url http://localhost:8765 2>&1 | tee /tmp/tunnel.log &
+          sleep 8
+
+          # Extract tunnel URL
+          TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          echo "Tunnel URL: $TUNNEL_URL"
+          echo "tunnel_url=$TUNNEL_URL" >> "$GITHUB_OUTPUT"
+        id: tunnel
+
+      - name: Download via tunnel on server
+        uses: appleboy/ssh-action@master
+        with:
+          command_timeout: 10m
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.PORT }}
+          script: |
+            set -e
+            mkdir -p /tmp/yohaku
+            TUNNEL="${{ steps.tunnel.outputs.tunnel_url }}"
+            echo "Downloading from $TUNNEL..."
+            curl -fsSL "$TUNNEL/release.zip" -o /tmp/yohaku/release.zip
+            curl -fsSL "$TUNNEL/ecosystem.config.js" -o /tmp/yohaku/ecosystem.config.js
+            echo "Download complete"
 
       - name: Deploy on server
         uses: appleboy/ssh-action@master
